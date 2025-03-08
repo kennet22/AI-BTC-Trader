@@ -4,6 +4,7 @@ import Layout from '../components/Layout';
 import StatsCard from '../components/StatsCard';
 import BitcoinPriceChart from '../components/BitcoinPriceChart';
 import ApiConfigForm from '../components/ApiConfigForm';
+import ProfitSummary from '../components/ProfitSummary';
 import { formatPrice, formatPercentage, formatBtcAmount } from '../lib/utils';
 import bitcoinApi from '../lib/api';
 import toast from 'react-hot-toast';
@@ -13,6 +14,51 @@ import {
   ScaleIcon,
   ClockIcon,
 } from '@heroicons/react/24/outline';
+
+// Cache helper functions
+const getCachedData = (key, expiryMinutes = 5) => {
+  if (typeof window === 'undefined') return null; // Guard against SSR
+  
+  try {
+    const cached = localStorage.getItem(key);
+    if (cached) {
+      const { data, timestamp } = JSON.parse(cached);
+      // Check if data is still valid (not expired)
+      if (Date.now() - timestamp < expiryMinutes * 60 * 1000) {
+        return data;
+      }
+    }
+  } catch (error) {
+    console.error(`Error retrieving cached ${key}:`, error);
+  }
+  return null;
+};
+
+const cacheData = (key, data) => {
+  if (typeof window === 'undefined') return; // Guard against SSR
+  
+  try {
+    localStorage.setItem(
+      key,
+      JSON.stringify({ data, timestamp: Date.now() })
+    );
+  } catch (error) {
+    console.error(`Error caching ${key}:`, error);
+  }
+};
+
+// Specific cache functions
+const getCachedMarketData = (timeframe) => getCachedData(`dashboardMarketData_${timeframe}`);
+const cacheMarketData = (timeframe, data) => cacheData(`dashboardMarketData_${timeframe}`, data);
+
+const getCachedAccountBalance = () => getCachedData('dashboardAccountBalance');
+const cacheAccountBalance = (data) => cacheData('dashboardAccountBalance', data);
+
+const getCachedPositions = () => getCachedData('dashboardPositions');
+const cachePositions = (data) => cacheData('dashboardPositions', data);
+
+const getCachedTradeHistory = () => getCachedData('dashboardTradeHistory');
+const cacheTradeHistory = (data) => cacheData('dashboardTradeHistory', data);
 
 export default function Dashboard() {
   const router = useRouter();
@@ -25,6 +71,12 @@ export default function Dashboard() {
   const [selectedTimeframe, setSelectedTimeframe] = useState('ONE_HOUR');
   const [lastUpdated, setLastUpdated] = useState(null);
   const [socket, setSocket] = useState(null);
+  const [dataFetched, setDataFetched] = useState({
+    market: false,
+    balance: false,
+    positions: false,
+    history: false
+  });
 
   // Check if API is configured on mount
   useEffect(() => {
@@ -32,7 +84,9 @@ export default function Dashboard() {
     setIsConfigured(apiConfigured);
     
     if (apiConfigured) {
-      fetchData();
+      // Load cached data if available, then fetch fresh data as needed
+      loadCachedData();
+      fetchData(true); // true = use cached data when available
       setupWebSocket();
     } else {
       setIsLoading(false);
@@ -44,6 +98,43 @@ export default function Dashboard() {
       }
     };
   }, []);
+
+  // Load cached data
+  const loadCachedData = () => {
+    // Load cached market data
+    const cachedMarketData = getCachedMarketData(selectedTimeframe);
+    if (cachedMarketData) {
+      setMarketData(cachedMarketData);
+      setDataFetched(prev => ({ ...prev, market: true }));
+    }
+    
+    // Load cached account balance
+    const cachedBalance = getCachedAccountBalance();
+    if (cachedBalance) {
+      setAccountBalance(cachedBalance);
+      setDataFetched(prev => ({ ...prev, balance: true }));
+    }
+    
+    // Load cached positions
+    const cachedPositions = getCachedPositions();
+    if (cachedPositions) {
+      setPositions(cachedPositions);
+      setDataFetched(prev => ({ ...prev, positions: true }));
+    }
+    
+    // Load cached trade history
+    const cachedHistory = getCachedTradeHistory();
+    if (cachedHistory) {
+      setTradeHistory(cachedHistory);
+      setDataFetched(prev => ({ ...prev, history: true }));
+    }
+    
+    // If we've loaded all data from cache, we're not loading anymore
+    if (cachedMarketData && cachedBalance && cachedPositions && cachedHistory) {
+      setIsLoading(false);
+      setLastUpdated(new Date());
+    }
+  };
 
   // Set up WebSocket connection
   const setupWebSocket = () => {
@@ -60,12 +151,18 @@ export default function Dashboard() {
             newData[newData.length - 1] = data.data;
             return newData;
           });
+          // Update cache
+          cacheMarketData(selectedTimeframe, [...marketData, data.data]);
         } else if (data.type === 'position_update') {
           // Update positions
           setPositions(data.data);
+          // Update cache
+          cachePositions(data.data);
         } else if (data.type === 'balance_update') {
           // Update account balance
           setAccountBalance(data.data);
+          // Update cache
+          cacheAccountBalance(data.data);
         }
       } catch (error) {
         console.error('Error parsing WebSocket message:', error);
@@ -76,32 +173,48 @@ export default function Dashboard() {
   };
 
   // Fetch all data
-  const fetchData = async () => {
+  const fetchData = async (useCached = false) => {
     setIsLoading(true);
     
     try {
-      // Fetch market data
-      const marketResponse = await bitcoinApi.getMarketData(selectedTimeframe);
-      if (marketResponse.status === 'success') {
-        setMarketData(marketResponse.data);
+      // Fetch market data if not already loaded from cache
+      if (!useCached || !dataFetched.market) {
+        const marketResponse = await bitcoinApi.getMarketData(selectedTimeframe);
+        if (marketResponse.status === 'success') {
+          setMarketData(marketResponse.data);
+          cacheMarketData(selectedTimeframe, marketResponse.data);
+          setDataFetched(prev => ({ ...prev, market: true }));
+        }
       }
       
-      // Fetch account balance
-      const balanceResponse = await bitcoinApi.getAccountBalance();
-      if (balanceResponse.status === 'success') {
-        setAccountBalance(balanceResponse.data);
+      // Fetch account balance if not already loaded from cache
+      if (!useCached || !dataFetched.balance) {
+        const balanceResponse = await bitcoinApi.getAccountBalance();
+        if (balanceResponse.status === 'success') {
+          setAccountBalance(balanceResponse.data);
+          cacheAccountBalance(balanceResponse.data);
+          setDataFetched(prev => ({ ...prev, balance: true }));
+        }
       }
       
-      // Fetch positions
-      const positionsResponse = await bitcoinApi.getPositions();
-      if (positionsResponse.status === 'success') {
-        setPositions(positionsResponse.data);
+      // Fetch positions if not already loaded from cache
+      if (!useCached || !dataFetched.positions) {
+        const positionsResponse = await bitcoinApi.getPositions();
+        if (positionsResponse.status === 'success') {
+          setPositions(positionsResponse.data);
+          cachePositions(positionsResponse.data);
+          setDataFetched(prev => ({ ...prev, positions: true }));
+        }
       }
       
-      // Fetch trade history
-      const historyResponse = await bitcoinApi.getTradeHistory();
-      if (historyResponse.status === 'success') {
-        setTradeHistory(historyResponse.data);
+      // Fetch trade history if not already loaded from cache
+      if (!useCached || !dataFetched.history) {
+        const historyResponse = await bitcoinApi.getTradeHistory();
+        if (historyResponse.status === 'success') {
+          setTradeHistory(historyResponse.data);
+          cacheTradeHistory(historyResponse.data);
+          setDataFetched(prev => ({ ...prev, history: true }));
+        }
       }
       
       setLastUpdated(new Date());
@@ -122,16 +235,27 @@ export default function Dashboard() {
 
   // Handle refresh button click
   const handleRefresh = () => {
-    fetchData();
+    // Force fetch fresh data (don't use cached)
+    fetchData(false);
   };
 
   // Handle timeframe change
   const handleTimeframeChange = (timeframe) => {
     setSelectedTimeframe(timeframe);
+    
+    // First check if we have cached data for this timeframe
+    const cachedData = getCachedMarketData(timeframe);
+    if (cachedData) {
+      setMarketData(cachedData);
+      return;
+    }
+    
+    // If no cached data, fetch fresh data
     bitcoinApi.getMarketData(timeframe)
       .then((response) => {
         if (response.status === 'success') {
           setMarketData(response.data);
+          cacheMarketData(timeframe, response.data);
         }
       })
       .catch((error) => {
@@ -247,6 +371,11 @@ export default function Dashboard() {
             value={`${formatPercentage(winRate)}`}
             icon={ClockIcon}
           />
+        </div>
+        
+        {/* Profit Summary */}
+        <div className="mt-6">
+          <ProfitSummary />
         </div>
         
         {/* Bitcoin Price Chart */}

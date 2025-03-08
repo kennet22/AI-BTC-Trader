@@ -16,13 +16,75 @@ import threading
 from pathlib import Path
 import traceback
 import requests
+import importlib.util
+from utils import (
+    format_price, 
+    calculate_profit_loss, 
+    calculate_profit_loss_percentage, 
+    get_performance_summary,
+    calculate_total_profit_summary
+)
+
+# Try importing additional dependencies
+missing_dependencies = []
+
+try:
+    import yaml
+except ImportError:
+    missing_dependencies.append("yaml")
+
+try:
+    import uuid
+except ImportError:
+    missing_dependencies.append("uuid")
+
+try:
+    import ccxt
+except ImportError:
+    missing_dependencies.append("ccxt")
+
+try:
+    from fastapi.templating import Jinja2Templates
+except ImportError:
+    missing_dependencies.append("jinja2")
+
+try:
+    import websockets
+except ImportError:
+    missing_dependencies.append("websockets")
+
+# If there are missing dependencies, display a helpful message
+if missing_dependencies:
+    print("=" * 80)
+    print("ERROR: Missing required dependencies:")
+    for dep in missing_dependencies:
+        print(f"  - {dep}")
+    print("\nPlease install the missing dependencies using:")
+    print("pip install " + " ".join(missing_dependencies))
+    print("=" * 80)
+    sys.exit(1)
 
 # Add the parent directory to sys.path so we can import the Bitcoin trader script
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from btc_investor_ai_v4 import BitcoinAITrader as OriginalBitcoinAITrader
+
+try:
+    from btc_investor_ai_v4 import BitcoinAITrader as OriginalBitcoinAITrader
+except ImportError:
+    print("=" * 80)
+    print("ERROR: Could not import BitcoinAITrader from btc_investor_ai_v4.py")
+    print("Make sure the file is in the correct location: " + str(Path(__file__).parent.parent.parent / "btc_investor_ai_v4.py"))
+    print("=" * 80)
+    sys.exit(1)
 
 # Import our isolated trader factory
-from trader_factory import create_trader
+try:
+    from trader_factory import create_trader
+except ImportError:
+    print("=" * 80)
+    print("ERROR: Could not import create_trader from trader_factory.py")
+    print("Make sure the file is in the same directory as main.py")
+    print("=" * 80)
+    sys.exit(1)
 
 # Create a monkey-patched version of BitcoinAITrader to work around the proxies issue
 class CustomBitcoinAITrader(OriginalBitcoinAITrader):
@@ -668,6 +730,161 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+@app.get("/api/profit-summary")
+async def get_profit_summary():
+    """Get a summary of realized and unrealized profit"""
+    if trader is None:
+        raise HTTPException(status_code=400, detail="Trader is not initialized. Please configure API keys first.")
+    
+    try:
+        # Get current price
+        market_data = trader.fetch_market_data()
+        current_price = market_data['close'].iloc[-1]
+        
+        # Get trade history and active positions
+        trade_history = trader.get_trade_history(limit=1000)  # Get all trades
+        active_positions = trader.load_active_positions()
+        
+        # Calculate profit summary
+        summary = calculate_total_profit_summary(trade_history, active_positions, current_price)
+        
+        return {
+            "status": "success",
+            "data": summary,
+            "current_price": current_price
+        }
+    except Exception as e:
+        logger.error(f"Error calculating profit summary: {e}")
+        raise HTTPException(status_code=500, detail=f"Error calculating profit summary: {str(e)}")
+
+@app.get("/api/ai-analysis")
+async def get_ai_analysis(background_tasks: BackgroundTasks):
+    """Get the latest AI analysis"""
+    if trader is None:
+        raise HTTPException(status_code=400, detail="Trader is not initialized. Please configure API keys first.")
+    
+    # Check if we have a cached analysis less than 15 minutes old
+    current_time = datetime.now()
+    cached_analysis = getattr(get_ai_analysis, 'cached_analysis', None)
+    cached_time = getattr(get_ai_analysis, 'cached_time', None)
+    
+    # If we have a valid cache that's less than 15 minutes old, return it
+    if cached_analysis and cached_time and (current_time - cached_time).total_seconds() < 900:  # 15 minutes
+        logger.info(f"Returning cached AI analysis from {cached_time}")
+        return {
+            "status": "success",
+            "data": cached_analysis,
+            "cached": True,
+            "cached_at": cached_time.isoformat()
+        }
+    
+    # Lock to prevent multiple simultaneous analysis requests
+    analysis_lock = getattr(get_ai_analysis, 'lock', None)
+    if analysis_lock is None:
+        analysis_lock = asyncio.Lock()
+        setattr(get_ai_analysis, 'lock', analysis_lock)
+    
+    # If analysis is already in progress, inform the client
+    if analysis_lock.locked():
+        logger.warning("AI analysis already in progress, returning status")
+        raise HTTPException(
+            status_code=429, 
+            detail="AI analysis is already in progress. Please try again in a few moments."
+        )
+    
+    async with analysis_lock:
+        try:
+            # Get market data with a timeout
+            try:
+                market_data = await asyncio.wait_for(
+                    asyncio.to_thread(trader.fetch_market_data),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.error("Timeout fetching market data")
+                raise HTTPException(status_code=504, detail="Timeout fetching market data")
+            
+            # Calculate technical indicators with a timeout
+            try:
+                market_data = await asyncio.wait_for(
+                    asyncio.to_thread(trader.calculate_technical_indicators, market_data),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.error("Timeout calculating technical indicators")
+                raise HTTPException(status_code=504, detail="Timeout calculating technical indicators")
+            
+            # Get account balance with a timeout
+            try:
+                account_balance = await asyncio.wait_for(
+                    asyncio.to_thread(trader.fetch_account_balance),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.error("Timeout fetching account balance")
+                raise HTTPException(status_code=504, detail="Timeout fetching account balance")
+            
+            # Get trade history with a timeout
+            try:
+                trade_history = await asyncio.wait_for(
+                    asyncio.to_thread(trader.get_trade_history, 1000),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.error("Timeout fetching trade history")
+                raise HTTPException(status_code=504, detail="Timeout fetching trade history")
+            
+            # The AI analysis is the most time-consuming part, run it in the background
+            def run_analysis_task():
+                try:
+                    # Run AI analysis
+                    analysis = trader.analyze_with_ai(market_data, account_balance, trade_history)
+                    
+                    # Update the cache
+                    setattr(get_ai_analysis, 'cached_analysis', analysis)
+                    setattr(get_ai_analysis, 'cached_time', datetime.now())
+                    
+                    logger.info(f"AI analysis completed and cached at {get_ai_analysis.cached_time}")
+                    return analysis
+                except Exception as e:
+                    logger.error(f"Error in background AI analysis task: {e}")
+                    logger.error(traceback.format_exc())
+                    return None
+            
+            # If we don't have a cached result, start a background task and return a temporary response
+            if not cached_analysis:
+                background_tasks.add_task(run_analysis_task)
+                
+                return {
+                    "status": "success",
+                    "message": "AI analysis has been started in the background. Please try again in a few moments.",
+                    "data": {
+                        "signal": "PROCESSING",
+                        "confidence": 0,
+                        "position_size_percent": 0,
+                        "stop_loss_percent": 0,
+                        "take_profit_percent": 0,
+                        "reasoning": "Analysis is being processed. Please check back in a few moments.",
+                        "risks": ["Analysis is still being processed"],
+                        "alternative_scenarios": ["Analysis is still being processed"],
+                        "time_horizon": "unknown",
+                        "priority_indicators": ["Analysis is still being processed"]
+                    }
+                }
+            
+            # Use existing cached analysis as a fallback
+            return {
+                "status": "success",
+                "data": cached_analysis,
+                "cached": True,
+                "cached_at": cached_time.isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting AI analysis: {e}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=f"Error getting AI analysis: {str(e)}")
 
 # Scheduled tasks
 @app.on_event("startup")
