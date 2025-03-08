@@ -6,6 +6,45 @@ import { formatPrice } from '../lib/utils';
 import bitcoinApi from '../lib/api';
 import toast from 'react-hot-toast';
 
+// Cache helper functions
+const getCachedData = (key, expiryMinutes = 5) => {
+  if (typeof window === 'undefined') return null; // Guard against SSR
+  
+  try {
+    const cached = localStorage.getItem(key);
+    if (cached) {
+      const { data, timestamp } = JSON.parse(cached);
+      // Check if data is still valid (not expired)
+      if (Date.now() - timestamp < expiryMinutes * 60 * 1000) {
+        return data;
+      }
+    }
+  } catch (error) {
+    console.error(`Error retrieving cached ${key}:`, error);
+  }
+  return null;
+};
+
+const cacheData = (key, data) => {
+  if (typeof window === 'undefined') return; // Guard against SSR
+  
+  try {
+    localStorage.setItem(
+      key,
+      JSON.stringify({ data, timestamp: Date.now() })
+    );
+  } catch (error) {
+    console.error(`Error caching ${key}:`, error);
+  }
+};
+
+// Specific cache functions
+const getCachedPositionsMarketData = () => getCachedData('positionsMarketData');
+const cachePositionsMarketData = (data) => cacheData('positionsMarketData', data);
+
+const getCachedPositionsData = () => getCachedData('positionsData');
+const cachePositionsData = (data) => cacheData('positionsData', data);
+
 export default function Positions() {
   const router = useRouter();
   const [isConfigured, setIsConfigured] = useState(false);
@@ -15,6 +54,10 @@ export default function Positions() {
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
   const [selectedPosition, setSelectedPosition] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [dataFetched, setDataFetched] = useState({
+    market: false,
+    positions: false,
+  });
 
   // Check if API is configured on mount
   useEffect(() => {
@@ -22,28 +65,60 @@ export default function Positions() {
     setIsConfigured(apiConfigured);
     
     if (apiConfigured) {
-      fetchData();
+      loadCachedData();
+      fetchData(true); // Use cached data when available
     } else {
       setIsLoading(false);
       router.push('/');
     }
   }, []);
 
+  // Load data from cache
+  const loadCachedData = () => {
+    // Load cached market data
+    const cachedMarketData = getCachedPositionsMarketData();
+    if (cachedMarketData) {
+      setMarketData(cachedMarketData);
+      setDataFetched(prev => ({ ...prev, market: true }));
+    }
+    
+    // Load cached positions
+    const cachedPositions = getCachedPositionsData();
+    if (cachedPositions) {
+      setPositions(cachedPositions);
+      setDataFetched(prev => ({ ...prev, positions: true }));
+    }
+    
+    // If we've loaded all data from cache, we're not loading anymore
+    if (cachedMarketData && cachedPositions) {
+      setIsLoading(false);
+      setLastUpdated(new Date());
+    }
+  };
+
   // Fetch data
-  const fetchData = async () => {
+  const fetchData = async (useCached = false) => {
     setIsLoading(true);
     
     try {
-      // Fetch market data for current price
-      const marketResponse = await bitcoinApi.getMarketData('ONE_HOUR');
-      if (marketResponse.status === 'success') {
-        setMarketData(marketResponse.data);
+      // Fetch market data if not already loaded from cache
+      if (!useCached || !dataFetched.market) {
+        const marketResponse = await bitcoinApi.getMarketData('ONE_HOUR');
+        if (marketResponse.status === 'success') {
+          setMarketData(marketResponse.data);
+          cachePositionsMarketData(marketResponse.data);
+          setDataFetched(prev => ({ ...prev, market: true }));
+        }
       }
       
-      // Fetch positions
-      const positionsResponse = await bitcoinApi.getPositions();
-      if (positionsResponse.status === 'success') {
-        setPositions(positionsResponse.data);
+      // Fetch positions if not already loaded from cache
+      if (!useCached || !dataFetched.positions) {
+        const positionsResponse = await bitcoinApi.getPositions();
+        if (positionsResponse.status === 'success') {
+          setPositions(positionsResponse.data);
+          cachePositionsData(positionsResponse.data);
+          setDataFetched(prev => ({ ...prev, positions: true }));
+        }
       }
       
       setLastUpdated(new Date());
@@ -72,7 +147,8 @@ export default function Positions() {
       
       if (response.status === 'success') {
         toast.success('Position closed successfully');
-        fetchData();
+        // Force reload without using cache
+        fetchData(false);
       } else {
         toast.error(`Failed to close position: ${response.message || 'Unknown error'}`);
       }
@@ -95,7 +171,8 @@ export default function Positions() {
       if (response.status === 'success') {
         toast.success('Position updated successfully');
         setUpdateModalOpen(false);
-        fetchData();
+        // Force reload without using cache
+        fetchData(false);
       } else {
         toast.error(`Failed to update position: ${response.message || 'Unknown error'}`);
       }
@@ -115,7 +192,7 @@ export default function Positions() {
           <h1 className="text-2xl font-bold text-gray-900">Active Positions</h1>
           <button
             type="button"
-            onClick={fetchData}
+            onClick={() => fetchData(false)} // Force reload without using cache
             className="inline-flex items-center px-3 py-2 text-sm font-medium text-white border border-transparent rounded-md shadow-sm bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
             disabled={isLoading}
           >

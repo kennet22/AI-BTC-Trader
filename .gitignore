@@ -172,3 +172,10 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Project specific files
+backend/config/api_keys.json
+backend/trade_history.json
+backend/active_positions.json
+.next/
+node_modules/
