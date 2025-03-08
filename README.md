@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Bitcoin AI Trader
 
 A full-stack application for AI-powered Bitcoin trading, featuring a FastAPI backend and Next.js frontend.
@@ -263,3 +264,6 @@ Your Bitcoin AI Trader application should now be accessible at your domain or th
 ## License
 
 MIT 
+=======
+# AI-BTC-Trader
+>>>>>>> 6997b5dd34f7ca128d3f82e3a1df174a0ca1ec06
