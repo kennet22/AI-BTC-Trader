@@ -30,15 +30,13 @@ def create_trader(coinbase_api_key, coinbase_api_secret, openai_api_key):
         
         logger.info(f"Creating trader with keys: CB_KEY:{key_preview}..., CB_SECRET:{secret_preview}..., OPENAI_KEY:{openai_preview}...")
         
-        # Create a new dict with ONLY the required parameters
-        trader_params = {
-            'coinbase_api_key': str(coinbase_api_key),
-            'coinbase_api_secret': str(coinbase_api_secret),
-            'ai_api_key': str(openai_api_key)  # Note: using ai_api_key here as that's what BitcoinAITrader expects
-        }
-        logger.info("Trader created successfully!")
-        # Create the trader with EXACT parameters using dictionary unpacking
-        trader_instance = BitcoinAITrader(**trader_params)
+        # Create the trader with positional parameters (not keyword arguments)
+        # as that's what the current BitcoinAITrader __init__ expects
+        trader_instance = BitcoinAITrader(
+            coinbase_api_key,
+            coinbase_api_secret,
+            openai_api_key  # Using openai_api_key directly
+        )
         
         logger.info("Trader created successfully!")
         return trader_instance

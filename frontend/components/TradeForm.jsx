@@ -44,22 +44,36 @@ export default function TradeForm({ currentPrice, accountBalance, onTradeComplet
       return;
     }
     
-    // Convert amount to USD if needed
-    const amountUSD = amountType === 'BTC'
-      ? parseFloat(amount) * currentPrice
-      : parseFloat(amount);
+    // Convert amount to the expected format
+    let tradeAmount;
+    if (action === 'BUY') {
+      // For BUY, we always send USD amount
+      tradeAmount = amountType === 'BTC' 
+        ? parseFloat(amount) * currentPrice 
+        : parseFloat(amount);
+    } else {
+      // For SELL, we always send BTC amount
+      tradeAmount = amountType === 'USD'
+        ? parseFloat(amount) / currentPrice
+        : parseFloat(amount);
+    }
     
     setIsLoading(true);
     
     try {
       const result = await bitcoinApi.executeTrade({
         action,
-        amount: amountUSD,
+        amount: tradeAmount,
         order_type: orderType,
+        time_in_force: 'gtc' // Default to good-till-cancelled
       });
       
       if (result.status === 'success') {
         toast.success(`${action} order executed successfully`);
+        setAmount('');
+        onTradeComplete && onTradeComplete(result);
+      } else if (result.status === 'partial_success') {
+        toast.success(`Trade executed with warning: ${result.message}`);
         setAmount('');
         onTradeComplete && onTradeComplete(result);
       } else {
@@ -67,7 +81,18 @@ export default function TradeForm({ currentPrice, accountBalance, onTradeComplet
       }
     } catch (error) {
       console.error('Trade error:', error);
-      toast.error(`Error: ${error.response?.data?.detail || error.message}`);
+      // Try to extract the most useful error message
+      let errorMessage = 'An unknown error occurred';
+      
+      if (error.response?.data?.detail) {
+        errorMessage = error.response.data.detail;
+      } else if (error.response?.data?.message) {
+        errorMessage = error.response.data.message;
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      toast.error(`Error: ${errorMessage}`);
     } finally {
       setIsLoading(false);
     }

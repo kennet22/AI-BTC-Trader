@@ -14,6 +14,8 @@ import schedule
 import time
 import threading
 from pathlib import Path
+import traceback
+import requests
 
 # Add the parent directory to sys.path so we can import the Bitcoin trader script
 sys.path.append(str(Path(__file__).parent.parent.parent))
@@ -30,21 +32,97 @@ class CustomBitcoinAITrader(OriginalBitcoinAITrader):
         # Extract only the parameters we care about
         coinbase_api_key = kwargs.get('coinbase_api_key')
         coinbase_api_secret = kwargs.get('coinbase_api_secret')
-        ai_api_key = kwargs.get('ai_api_key')
+        ai_api_key = kwargs.get('openai_api_key') or kwargs.get('ai_api_key')
         
-        # Call the parent __init__ with only the expected parameters
-        super().__init__(
-            coinbase_api_key=coinbase_api_key,
-            coinbase_api_secret=coinbase_api_secret,
-            ai_api_key=ai_api_key
-        )
+        # Call the parent __init__ with positional parameters as expected
+        super().__init__(coinbase_api_key, coinbase_api_secret, ai_api_key)
+        
+    def get_usd_balance(self):
+        """Get USD balance directly - forward to the parent method if it exists"""
+        if hasattr(super(), 'get_usd_balance'):
+            return super().get_usd_balance()
+        else:
+            # Fallback if the parent class doesn't have the method (backward compatibility)
+            balances = self.fetch_account_balance()
+            return balances.get('USD', {}).get('available', 0.0)
+    
+    def get_btc_balance(self):
+        """Get BTC balance directly - forward to the parent method if it exists"""
+        if hasattr(super(), 'get_btc_balance'):
+            return super().get_btc_balance()
+        else:
+            # Fallback if the parent class doesn't have the method (backward compatibility)
+            balances = self.fetch_account_balance()
+            return balances.get('BTC', {}).get('available', 0.0)
+            
+    def execute_trade(self, action, amount, order_type="market", time_in_force="gtc"):
+        """Enhanced execute_trade with better error handling and logging"""
+        try:
+            logger.info(f"Executing {action} trade for {amount:.2f} ({order_type})")
+            
+            # Call the parent method with try-except to handle errors specifically
+            try:
+                result = super().execute_trade(action, amount, order_type, time_in_force)
+            except requests.exceptions.HTTPError as http_error:
+                logger.error(f"HTTP Error in execute_trade: {http_error}")
+                # Extract error details from the response if possible
+                error_details = {}
+                try:
+                    if hasattr(http_error, 'response') and http_error.response:
+                        error_text = http_error.response.text
+                        error_details = json.loads(error_text)
+                except (json.JSONDecodeError, AttributeError):
+                    error_details = {'message': str(http_error)}
+                
+                # Return structured error
+                return {
+                    'error': {
+                        'message': str(http_error),
+                        'type': 'HTTPError',
+                        'details': error_details
+                    }
+                }
+            except Exception as e:
+                logger.error(f"Error in execute_trade: {str(e)}")
+                return {
+                    'error': {
+                        'message': str(e),
+                        'type': type(e).__name__
+                    }
+                }
+            
+            # Enhanced logging of the result
+            if result:
+                if isinstance(result, dict):
+                    if result.get('success'):
+                        logger.info(f"Trade executed successfully")
+                    elif result.get('error'):
+                        logger.error(f"Trade execution error: {result.get('error', {})}")
+                else:
+                    logger.info(f"Trade execution completed")
+            else:
+                logger.warning("Trade execution returned None")
+                
+            return result
+        except Exception as e:
+            logger.error(f"Error in CustomBitcoinAITrader.execute_trade: {str(e)}")
+            return {
+                'error': {
+                    'message': str(e),
+                    'type': type(e).__name__
+                }
+            }
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)-8s | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    handlers=[
+        logging.StreamHandler()
+    ]
 )
+
+# Create a logger for the app
 logger = logging.getLogger(__name__)
 
 # Load environment variables
@@ -138,7 +216,8 @@ class APIConfig(BaseModel):
 class TradeRequest(BaseModel):
     action: str  # "BUY" or "SELL"
     amount: float
-    order_type: str = "market"
+    order_type: str = "market"  # Default to market order for simplicity
+    time_in_force: str = "gtc"  # Add time_in_force parameter with default
 
 class PositionUpdate(BaseModel):
     position_id: str
@@ -314,7 +393,33 @@ async def get_account_balance():
         raise HTTPException(status_code=400, detail="Trader is not initialized. Please configure API keys first.")
     
     try:
+        # Get balances using both general and direct methods
+        # First try with the standard method
         balance = trader.fetch_account_balance()
+        
+        # Now try the direct methods for more accurate values
+        try:
+            logger.debug("Using direct balance methods for more accurate balance information")
+            usd_balance = trader.get_usd_balance()
+            btc_balance = trader.get_btc_balance()
+            
+            # If direct methods worked, update the balance dictionary with these values
+            if usd_balance is not None:
+                if 'USD' not in balance:
+                    balance['USD'] = {'available': 0.0, 'hold': 0.0, 'total': 0.0}
+                balance['USD']['available'] = usd_balance
+                balance['USD']['total'] = usd_balance  # We might not have hold info, so set total = available
+            
+            if btc_balance is not None:
+                if 'BTC' not in balance:
+                    balance['BTC'] = {'available': 0.0, 'hold': 0.0, 'total': 0.0}
+                balance['BTC']['available'] = btc_balance
+                balance['BTC']['total'] = btc_balance  # We might not have hold info, so set total = available
+            
+            logger.info(f"Account balances - USD: ${balance.get('USD', {}).get('available', 0):.2f}, BTC: {balance.get('BTC', {}).get('available', 0):.8f}")
+        except Exception as inner_e:
+            logger.warning(f"Error using direct balance methods: {inner_e}")
+        
         return {"status": "success", "data": balance}
     except Exception as e:
         logger.error(f"Error fetching account balance: {e}")
@@ -340,55 +445,127 @@ async def execute_trade(trade: TradeRequest):
         raise HTTPException(status_code=400, detail="Trader is not initialized. Please configure API keys first.")
     
     try:
+        logger.info(f"Trade request: {trade.action} {trade.amount:.2f} ({trade.order_type})")
+        
+        # Validate the action
+        if trade.action not in ["BUY", "SELL"]:
+            raise HTTPException(status_code=400, detail=f"Invalid action: {trade.action}. Must be BUY or SELL.")
+        
+        # Validate order type
+        if trade.order_type not in ["market", "limit"]:
+            raise HTTPException(status_code=400, detail=f"Invalid order type: {trade.order_type}. Must be market or limit.")
+        
+        # Validate time_in_force
+        if trade.time_in_force not in ["gtc", "ioc", "fok"]:
+            raise HTTPException(status_code=400, detail=f"Invalid time_in_force: {trade.time_in_force}. Must be gtc, ioc, or fok.")
+        
+        # Check account balance before executing trade
+        balance = trader.fetch_account_balance()
+        
+        # For buy orders, check USD balance
+        if trade.action == "BUY":
+            usd_balance = balance.get('USD', {}).get('available', 0)
+            logger.debug(f"USD balance before trade: {usd_balance}")
+            if usd_balance < trade.amount:
+                raise HTTPException(status_code=400, detail=f"Insufficient USD balance: {usd_balance:.2f}. Needed: {trade.amount:.2f}")
+        
+        # For sell orders, check BTC balance
+        elif trade.action == "SELL":
+            btc_balance = balance.get('BTC', {}).get('available', 0)
+            logger.debug(f"BTC balance before trade: {btc_balance}")
+            if btc_balance < trade.amount:
+                raise HTTPException(status_code=400, detail=f"Insufficient BTC balance: {btc_balance:.8f}. Needed: {trade.amount:.8f}")
+        
+        # Execute the trade with all parameters
         result = trader.execute_trade(
             action=trade.action,
             amount=trade.amount,
-            order_type=trade.order_type
+            order_type=trade.order_type,
+            time_in_force=trade.time_in_force
         )
         
-        if isinstance(result, dict) and result.get('success'):
+        logger.debug(f"Trade execution result type: {type(result)}")
+        
+        if result and (isinstance(result, dict) and result.get('success')):
             # If it's a buy, add a position for tracking
             if trade.action == "BUY":
-                # Get current price
-                market_data = trader.fetch_market_data()
-                current_price = market_data['close'].iloc[-1]
-                
-                # Add position
-                position_size_btc = trade.amount / current_price
-                position_id = trader.add_position(
-                    entry_price=current_price,
-                    size=position_size_btc,
-                    stop_loss=current_price * 0.95,  # Default 5% stop loss
-                    take_profit=current_price * 1.1,  # Default 10% take profit
-                    trailing_stop_pct=0,
-                    dynamic_stop_loss=True,
-                    atr_multiplier=3.0
-                )
-                
-                # Log the trade
-                trader.log_trade(position_id, position_size_btc, "BUY", current_price, "manual")
-                
-                return {
-                    "status": "success", 
-                    "message": "Trade executed successfully",
-                    "data": {
-                        "order_id": result['success_response']['order_id'],
-                        "position_id": position_id
+                try:
+                    # Get current price
+                    market_data = trader.fetch_market_data()
+                    current_price = market_data['close'].iloc[-1]
+                    
+                    # Add position
+                    position_size_btc = trade.amount / current_price
+                    position_id = trader.add_position(
+                        entry_price=current_price,
+                        size=position_size_btc,
+                        stop_loss=current_price * 0.95,  # Default 5% stop loss
+                        take_profit=current_price * 1.1,  # Default 10% take profit
+                        trailing_stop_pct=0,
+                        dynamic_stop_loss=True,
+                        atr_multiplier=3.0
+                    )
+                    
+                    # Log the trade
+                    trader.log_trade(position_id, position_size_btc, "BUY", current_price, "manual")
+                    
+                    logger.info(f"Buy position created: ID {position_id}, size {position_size_btc:.8f} BTC")
+                    
+                    return {
+                        "status": "success", 
+                        "message": "Trade executed successfully",
+                        "data": {
+                            "order_id": result['success_response'].get('order_id', 'unknown'),
+                            "position_id": position_id
+                        }
                     }
-                }
+                except Exception as e:
+                    # The trade went through but position tracking failed
+                    logger.error(f"Trade executed but position tracking failed: {e}")
+                    return {
+                        "status": "partial_success",
+                        "message": "Trade executed but position tracking failed",
+                        "data": {
+                            "order_id": result['success_response'].get('order_id', 'unknown'),
+                            "error": str(e)
+                        }
+                    }
             else:
                 # Log sell trade
-                trader.log_trade("manual_sell", trade.amount, "SELL", 0, "manual")
-                
-                return {
-                    "status": "success", 
-                    "message": "Trade executed successfully",
-                    "data": {
-                        "order_id": result['success_response']['order_id']
+                try:
+                    trader.log_trade("manual_sell", trade.amount, "SELL", 0, "manual")
+                    
+                    logger.info(f"Sell order executed: {trade.amount:.8f} BTC")
+                    
+                    return {
+                        "status": "success", 
+                        "message": "Trade executed successfully",
+                        "data": {
+                            "order_id": result['success_response'].get('order_id', 'unknown')
+                        }
                     }
-                }
+                except Exception as e:
+                    # The trade went through but logging failed
+                    logger.error(f"Trade executed but logging failed: {e}")
+                    return {
+                        "status": "partial_success",
+                        "message": "Trade executed but logging failed",
+                        "data": {
+                            "order_id": result['success_response'].get('order_id', 'unknown'),
+                            "error": str(e)
+                        }
+                    }
+        elif result and isinstance(result, dict) and result.get('error'):
+            # Got a structured error response
+            error_detail = result.get('error', {})
+            error_message = error_detail.get('message', 'Unknown error')
+            error_type = error_detail.get('type', 'UnknownError')
+            
+            logger.error(f"Trade execution failed: {error_type} - {error_message}")
+            raise HTTPException(status_code=400, detail=f"Trade execution failed: {error_message}")
         else:
-            raise HTTPException(status_code=500, detail=f"Error executing trade: {result}")
+            logger.error(f"Error executing trade: Unknown error or invalid response format")
+            raise HTTPException(status_code=500, detail=f"Error executing trade: Unknown error or invalid response format")
     except Exception as e:
         logger.error(f"Error executing trade: {e}")
         raise HTTPException(status_code=500, detail=f"Error executing trade: {str(e)}")
