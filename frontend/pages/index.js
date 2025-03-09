@@ -1,19 +1,32 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '../components/Layout';
-import StatsCard from '../components/StatsCard';
+import BitcoinPriceCard from '../components/BitcoinPriceCard';
+import PortfolioCard from '../components/PortfolioCard';
+import WinRateCard from '../components/WinRateCard';
+import AIAnalysisCard from '../components/AIAnalysisCard';
 import BitcoinPriceChart from '../components/BitcoinPriceChart';
 import ApiConfigForm from '../components/ApiConfigForm';
 import ProfitSummary from '../components/ProfitSummary';
 import { formatPrice, formatPercentage, formatBtcAmount } from '../lib/utils';
 import bitcoinApi from '../lib/api';
-import toast from 'react-hot-toast';
+import { Toaster } from 'react-hot-toast';
+import dynamic from 'next/dynamic';
+
+// Import icons
 import {
   ArrowTrendingUpIcon,
   CurrencyDollarIcon,
   ScaleIcon,
   ClockIcon,
+  ChartBarIcon,
 } from '@heroicons/react/24/outline';
+
+// Dynamically import toast to prevent SSR issues
+const toast = dynamic(
+  () => import('react-hot-toast').then((mod) => mod.toast),
+  { ssr: false }
+);
 
 // Cache helper functions
 const getCachedData = (key, expiryMinutes = 5) => {
@@ -64,6 +77,7 @@ export default function Dashboard() {
   const router = useRouter();
   const [isConfigured, setIsConfigured] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isAnalysisLoading, setIsAnalysisLoading] = useState(false);
   const [marketData, setMarketData] = useState([]);
   const [accountBalance, setAccountBalance] = useState(null);
   const [positions, setPositions] = useState({});
@@ -71,12 +85,43 @@ export default function Dashboard() {
   const [selectedTimeframe, setSelectedTimeframe] = useState('ONE_HOUR');
   const [lastUpdated, setLastUpdated] = useState(null);
   const [socket, setSocket] = useState(null);
+  const [analysis, setAnalysis] = useState(null);
   const [dataFetched, setDataFetched] = useState({
     market: false,
     balance: false,
     positions: false,
-    history: false
+    history: false,
+    analysis: false
   });
+  
+  // Add state for tracking card updates to trigger animations
+  const [updatedCards, setUpdatedCards] = useState({
+    price: false,
+    portfolio: false,
+    position: false,
+    winRate: false
+  });
+
+  const [isStrategyRunning, setIsStrategyRunning] = useState(false);
+  const [isAiServiceEnabled, setIsAiServiceEnabled] = useState(false);
+  const [lastAnalysisTime, setLastAnalysisTime] = useState(null);
+  const [nextAnalysisAvailable, setNextAnalysisAvailable] = useState(null);
+
+  // Clear update flags after animations complete
+  useEffect(() => {
+    if (Object.values(updatedCards).some(Boolean)) {
+      const timer = setTimeout(() => {
+        setUpdatedCards({
+          price: false,
+          portfolio: false,
+          position: false,
+          winRate: false
+        });
+      }, 1000);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [updatedCards]);
 
   // Check if API is configured on mount
   useEffect(() => {
@@ -151,18 +196,38 @@ export default function Dashboard() {
             newData[newData.length - 1] = data.data;
             return newData;
           });
-          // Update cache
+          // Cache the updated data
           cacheMarketData(selectedTimeframe, [...marketData, data.data]);
+          // Trigger animation for price card
+          setUpdatedCards(prev => ({ ...prev, price: true }));
         } else if (data.type === 'position_update') {
           // Update positions
           setPositions(data.data);
-          // Update cache
+          // Cache the updated data
           cachePositions(data.data);
+          // Trigger animation for position card
+          setUpdatedCards(prev => ({ ...prev, position: true }));
         } else if (data.type === 'balance_update') {
-          // Update account balance
-          setAccountBalance(data.data);
-          // Update cache
+          // Update account balance with the new structure
+          setAccountBalance({
+            main: {
+              name: 'Main Account',
+              USD: data.data.main?.USD || 0,
+              BTC: data.data.main?.BTC || 0
+            },
+            savings: {
+              name: 'Savings',
+              USDC: data.data.savings?.USDC || 0,
+              ETH: data.data.savings?.ETH || 0
+            },
+            trading: {
+              name: 'Trading',
+              SOL: data.data.trading?.SOL || 0,
+              XRP: data.data.trading?.XRP || 0
+            }
+          });
           cacheAccountBalance(data.data);
+          setUpdatedCards(prev => ({ ...prev, portfolio: true }));
         }
       } catch (error) {
         console.error('Error parsing WebSocket message:', error);
@@ -177,52 +242,112 @@ export default function Dashboard() {
     setIsLoading(true);
     
     try {
-      // Fetch market data if not already loaded from cache
+      // Fetch other data first
+      const fetchPromises = [];
+      
       if (!useCached || !dataFetched.market) {
-        const marketResponse = await bitcoinApi.getMarketData(selectedTimeframe);
-        if (marketResponse.status === 'success') {
-          setMarketData(marketResponse.data);
-          cacheMarketData(selectedTimeframe, marketResponse.data);
-          setDataFetched(prev => ({ ...prev, market: true }));
-        }
+        fetchPromises.push(
+          bitcoinApi.getMarketData(selectedTimeframe)
+            .then(response => {
+              if (response.status === 'success') {
+                setMarketData(response.data);
+                cacheMarketData(selectedTimeframe, response.data);
+                setDataFetched(prev => ({ ...prev, market: true }));
+                setUpdatedCards(prev => ({ ...prev, price: true }));
+              }
+            })
+        );
       }
       
-      // Fetch account balance if not already loaded from cache
       if (!useCached || !dataFetched.balance) {
-        const balanceResponse = await bitcoinApi.getAccountBalance();
-        if (balanceResponse.status === 'success') {
-          setAccountBalance(balanceResponse.data);
-          cacheAccountBalance(balanceResponse.data);
-          setDataFetched(prev => ({ ...prev, balance: true }));
-        }
+        fetchPromises.push(
+          bitcoinApi.getAccountBalance()
+            .then(response => {
+              if (response.status === 'success') {
+                // Transform the response data to match our structure
+                const balanceData = {
+                  main: {
+                    name: 'Main Account',
+                    USD: response.data.main?.USD || 0,
+                    BTC: response.data.main?.BTC || 0
+                  },
+                  savings: {
+                    name: 'Savings',
+                    USDC: response.data.savings?.USDC || 0,
+                    ETH: response.data.savings?.ETH || 0
+                  },
+                  trading: {
+                    name: 'Trading',
+                    SOL: response.data.trading?.SOL || 0,
+                    XRP: response.data.trading?.XRP || 0
+                  }
+                };
+                setAccountBalance(balanceData);
+                cacheAccountBalance(balanceData);
+                setDataFetched(prev => ({ ...prev, balance: true }));
+                setUpdatedCards(prev => ({ ...prev, portfolio: true }));
+              }
+            })
+        );
       }
       
-      // Fetch positions if not already loaded from cache
       if (!useCached || !dataFetched.positions) {
-        const positionsResponse = await bitcoinApi.getPositions();
-        if (positionsResponse.status === 'success') {
-          setPositions(positionsResponse.data);
-          cachePositions(positionsResponse.data);
-          setDataFetched(prev => ({ ...prev, positions: true }));
-        }
+        fetchPromises.push(
+          bitcoinApi.getPositions()
+            .then(response => {
+              if (response.status === 'success') {
+                setPositions(response.data);
+                cachePositions(response.data);
+                setDataFetched(prev => ({ ...prev, positions: true }));
+                setUpdatedCards(prev => ({ ...prev, position: true }));
+              }
+            })
+        );
       }
       
-      // Fetch trade history if not already loaded from cache
       if (!useCached || !dataFetched.history) {
-        const historyResponse = await bitcoinApi.getTradeHistory();
-        if (historyResponse.status === 'success') {
-          setTradeHistory(historyResponse.data);
-          cacheTradeHistory(historyResponse.data);
-          setDataFetched(prev => ({ ...prev, history: true }));
-        }
+        fetchPromises.push(
+          bitcoinApi.getTradeHistory()
+            .then(response => {
+              if (response.status === 'success') {
+                setTradeHistory(response.data);
+                cacheTradeHistory(response.data);
+                setDataFetched(prev => ({ ...prev, history: true }));
+                setUpdatedCards(prev => ({ ...prev, winRate: true }));
+              }
+            })
+        );
       }
       
+      // Wait for all other data to be fetched
+      await Promise.all(fetchPromises);
+      setIsLoading(false);
       setLastUpdated(new Date());
+      
+      // Then fetch AI analysis separately
+      if (!useCached || !dataFetched.analysis) {
+        setIsAnalysisLoading(true);
+        const analysisResponse = await bitcoinApi.getAnalysis();
+        if (analysisResponse.status === 'success') {
+          setAnalysis(analysisResponse.data);
+          setDataFetched(prev => ({ ...prev, analysis: true }));
+        }
+        setIsAnalysisLoading(false);
+      }
+      
     } catch (error) {
       console.error('Error fetching data:', error);
-      toast.error('Failed to fetch data. Please check your API configuration.');
-    } finally {
+      if (typeof window !== 'undefined') {
+        setTimeout(() => {
+          try {
+            toast?.error?.('Failed to fetch data. Please check your API configuration.');
+          } catch (err) {
+            console.log('Toast notification failed');
+          }
+        }, 0);
+      }
       setIsLoading(false);
+      setIsAnalysisLoading(false);
     }
   };
 
@@ -247,6 +372,8 @@ export default function Dashboard() {
     const cachedData = getCachedMarketData(timeframe);
     if (cachedData) {
       setMarketData(cachedData);
+      // Trigger animation for price card
+      setUpdatedCards(prev => ({ ...prev, price: true }));
       return;
     }
     
@@ -256,26 +383,114 @@ export default function Dashboard() {
         if (response.status === 'success') {
           setMarketData(response.data);
           cacheMarketData(timeframe, response.data);
+          // Trigger animation for price card
+          setUpdatedCards(prev => ({ ...prev, price: true }));
         }
       })
       .catch((error) => {
         console.error('Error fetching market data:', error);
-        toast.error('Failed to fetch market data');
+        if (typeof window !== 'undefined') {
+          setTimeout(() => {
+            try {
+              toast?.error?.('Failed to fetch market data');
+            } catch (err) {
+              console.log('Toast notification failed');
+            }
+          }, 0);
+        }
       });
   };
 
-  // Handle run strategy button click
-  const handleRunStrategy = async () => {
+  // Add effect to check if analysis is available
+  useEffect(() => {
+    if (lastAnalysisTime) {
+      const checkAvailability = () => {
+        const now = Date.now();
+        const timeSinceLastAnalysis = now - lastAnalysisTime;
+        const timeRemaining = Math.max(30000 - timeSinceLastAnalysis, 0);
+        
+        if (timeRemaining === 0) {
+          setNextAnalysisAvailable(null);
+        } else {
+          setNextAnalysisAvailable(new Date(now + timeRemaining));
+          setTimeout(checkAvailability, 1000);
+        }
+      };
+      
+      checkAvailability();
+    }
+  }, [lastAnalysisTime]);
+
+  // Add effect to check AI service status on mount and periodically
+  useEffect(() => {
+    const checkAiServiceStatus = async () => {
+      try {
+        const response = await bitcoinApi.getAiServiceStatus();
+        setIsAiServiceEnabled(response.status === 'running');
+      } catch (error) {
+        console.error('Error checking AI service status:', error);
+        setIsAiServiceEnabled(false);
+      }
+    };
+
+    checkAiServiceStatus();
+    const interval = setInterval(checkAiServiceStatus, 30000); // Check every 30 seconds
+    
+    return () => clearInterval(interval);
+  }, []);
+
+  // Handle enabling/disabling AI service
+  const handleToggleAiService = async () => {
     try {
-      const response = await bitcoinApi.runStrategy();
+      const action = isAiServiceEnabled ? 'stop' : 'start';
+      setIsLoading(true);
+      
+      const response = await bitcoinApi.toggleAiService(action);
       if (response.status === 'success') {
-        toast.success('Trading strategy started');
+        setIsAiServiceEnabled(!isAiServiceEnabled);
+        toast?.success?.(
+          `AI Trading ${action === 'start' ? 'enabled' : 'disabled'} successfully`
+        );
       } else {
-        toast.error(`Failed to start trading strategy: ${response.message || 'Unknown error'}`);
+        throw new Error(response.message || `Failed to ${action} AI service`);
       }
     } catch (error) {
-      console.error('Error running strategy:', error);
-      toast.error(`Error: ${error.response?.data?.detail || error.message}`);
+      console.error('Error toggling AI service:', error);
+      toast?.error?.(error.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Update the run strategy function to include rate limiting
+  const handleRunAnalysis = async () => {
+    // Check if enough time has passed since last analysis
+    if (lastAnalysisTime && Date.now() - lastAnalysisTime < 30000) {
+      const remainingTime = Math.ceil((30000 - (Date.now() - lastAnalysisTime)) / 1000);
+      toast?.error?.(`Please wait ${remainingTime} seconds before running another analysis`);
+      return;
+    }
+
+    try {
+      setIsAnalysisLoading(true);
+      const response = await bitcoinApi.runStrategy();
+      
+      if (response.status === 'success') {
+        setLastAnalysisTime(Date.now());
+        
+        if (response.data?.analysis) {
+          setAnalysis(response.data.analysis);
+          setDataFetched(prev => ({ ...prev, analysis: true }));
+          toast?.success?.('Analysis completed successfully');
+        }
+      } else {
+        throw new Error(response.message || 'Unknown error');
+      }
+    } catch (error) {
+      console.error('Error running analysis:', error);
+      toast?.error?.(`Error: ${error.message}`);
+    } finally {
+      setIsAnalysisLoading(false);
     }
   };
 
@@ -286,9 +501,22 @@ export default function Dashboard() {
   const priceChangePercent = previousPrice > 0 ? (priceChange / previousPrice) * 100 : 0;
 
   // Calculate total portfolio value
-  const portfolioValue = accountBalance
-    ? (accountBalance.BTC?.available || 0) * currentPrice + (accountBalance.USD?.available || 0)
-    : 0;
+  const calculatePortfolioValue = () => {
+    if (!accountBalance) return 0;
+
+    const mainAccountValue = (accountBalance.main?.USD || 0) + 
+                           ((accountBalance.main?.BTC || 0) * currentPrice);
+    
+    const savingsValue = (accountBalance.savings?.USDC || 0) + 
+                        ((accountBalance.savings?.ETH || 0) * 2000); // Mock ETH price
+    
+    const tradingValue = ((accountBalance.trading?.SOL || 0) * 60) + // Mock SOL price
+                        ((accountBalance.trading?.XRP || 0) * 0.50); // Mock XRP price
+
+    return mainAccountValue + savingsValue + tradingValue;
+  };
+
+  const portfolioValue = calculatePortfolioValue();
 
   // Calculate total position value
   const positionValue = Object.values(positions).reduce(
@@ -332,11 +560,15 @@ export default function Dashboard() {
             </button>
             <button
               type="button"
-              onClick={handleRunStrategy}
-              className="inline-flex items-center px-3 py-2 text-sm font-medium text-white bg-green-600 border border-transparent rounded-md shadow-sm hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
+              onClick={handleToggleAiService}
+              className={`inline-flex items-center px-3 py-2 text-sm font-medium text-white border border-transparent rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2 ${
+                isAiServiceEnabled 
+                  ? 'bg-red-600 hover:bg-red-700 focus:ring-red-500'
+                  : 'bg-green-600 hover:bg-green-700 focus:ring-green-500'
+              }`}
               disabled={isLoading}
             >
-              Run Strategy
+              {isAiServiceEnabled ? 'Disable AI Trading' : 'Enable AI Trading'}
             </button>
           </div>
         </div>
@@ -348,133 +580,188 @@ export default function Dashboard() {
         )}
         
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 gap-5 mt-6 sm:grid-cols-2 lg:grid-cols-4">
-          <StatsCard
-            title="Bitcoin Price"
-            value={formatPrice(currentPrice)}
-            change={`${priceChangePercent > 0 ? '+' : ''}${formatPercentage(priceChangePercent)}`}
-            icon={ArrowTrendingUpIcon}
-            trend={priceChangePercent > 0 ? 'up' : priceChangePercent < 0 ? 'down' : 'neutral'}
+        <div className="grid grid-cols-1 gap-5 mt-6 sm:grid-cols-2 lg:grid-cols-4 auto-rows-fr">
+          <BitcoinPriceCard
+            currentPrice={currentPrice}
+            priceChangePercent={priceChangePercent}
+            marketData={marketData}
+            hasUpdated={updatedCards.price}
+            linkTo="/trading"
+            secondaryLinkTo="/market-data"
           />
-          <StatsCard
-            title="Portfolio Value"
-            value={formatPrice(portfolioValue)}
-            icon={CurrencyDollarIcon}
+          <PortfolioCard
+            portfolioValue={portfolioValue}
+            accountBalance={accountBalance}
+            currentPrice={currentPrice}
+            hasUpdated={updatedCards.portfolio}
+            linkTo="/history"
           />
-          <StatsCard
-            title="Position Value"
-            value={formatPrice(positionValue)}
-            icon={ScaleIcon}
+          <AIAnalysisCard
+            hasUpdated={updatedCards.price}
+            isProcessing={isAnalysisLoading}
           />
-          <StatsCard
-            title="Win Rate"
-            value={`${formatPercentage(winRate)}`}
-            icon={ClockIcon}
+          <WinRateCard
+            winRate={winRate}
+            tradeHistory={tradeHistory}
+            hasUpdated={updatedCards.winRate}
+            linkTo="/history"
           />
         </div>
         
-        {/* Profit Summary */}
-        <div className="mt-6">
-          <ProfitSummary />
-        </div>
-        
-        {/* Bitcoin Price Chart */}
-        <div className="mt-6">
-          <div className="p-6 bg-white rounded-lg shadow">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-medium text-gray-900">Bitcoin Price Chart</h2>
-              <div className="flex space-x-2">
-                <select
-                  className="block w-full px-3 py-2 text-sm border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500"
-                  value={selectedTimeframe}
-                  onChange={(e) => handleTimeframeChange(e.target.value)}
-                  disabled={isLoading}
-                >
-                  <option value="ONE_MINUTE">1m</option>
-                  <option value="FIVE_MINUTE">5m</option>
-                  <option value="FIFTEEN_MINUTE">15m</option>
-                  <option value="THIRTY_MINUTE">30m</option>
-                  <option value="ONE_HOUR">1h</option>
-                  <option value="TWO_HOUR">2h</option>
-                  <option value="SIX_HOUR">6h</option>
-                  <option value="ONE_DAY">1d</option>
-                </select>
+        {/* Two Column Layout: Profit Summary and AI Analysis Info */}
+        <div className="grid grid-cols-1 gap-6 mt-6 lg:grid-cols-2">
+          {/* Profit Summary Column */}
+          <div className="bg-white rounded-lg shadow">
+            <div className="p-6">
+              {/* <h2 className="text-lg font-medium text-gray-900">Profit Summary</h2> */}
+              <div className="mt-4">
+                <ProfitSummary />
               </div>
             </div>
-            <BitcoinPriceChart data={marketData} timeframe={selectedTimeframe} />
           </div>
-        </div>
-        
-        {/* Account Balance */}
-        <div className="mt-6">
-          <div className="p-6 bg-white rounded-lg shadow">
-            <h2 className="text-lg font-medium text-gray-900">Account Balance</h2>
-            {accountBalance ? (
-              <div className="mt-4 overflow-hidden border border-gray-200 rounded-lg">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th scope="col" className="px-6 py-3 text-xs font-medium tracking-wider text-left text-gray-500 uppercase">
-                        Currency
-                      </th>
-                      <th scope="col" className="px-6 py-3 text-xs font-medium tracking-wider text-left text-gray-500 uppercase">
-                        Available
-                      </th>
-                      <th scope="col" className="px-6 py-3 text-xs font-medium tracking-wider text-left text-gray-500 uppercase">
-                        Hold
-                      </th>
-                      <th scope="col" className="px-6 py-3 text-xs font-medium tracking-wider text-left text-gray-500 uppercase">
-                        Total
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {accountBalance.USD && (
-                      <tr>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="text-sm font-medium text-gray-900">USD</div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="text-sm text-gray-900">{formatPrice(accountBalance.USD.available)}</div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="text-sm text-gray-900">{formatPrice(accountBalance.USD.hold)}</div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="text-sm text-gray-900">{formatPrice(accountBalance.USD.total)}</div>
-                        </td>
-                      </tr>
-                    )}
-                    {accountBalance.BTC && (
-                      <tr>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="text-sm font-medium text-gray-900">BTC</div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="text-sm text-gray-900">{formatBtcAmount(accountBalance.BTC.available)} BTC</div>
-                          <div className="text-xs text-gray-500">{formatPrice(accountBalance.BTC.available * currentPrice)}</div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="text-sm text-gray-900">{formatBtcAmount(accountBalance.BTC.hold)} BTC</div>
-                          <div className="text-xs text-gray-500">{formatPrice(accountBalance.BTC.hold * currentPrice)}</div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="text-sm text-gray-900">{formatBtcAmount(accountBalance.BTC.total)} BTC</div>
-                          <div className="text-xs text-gray-500">{formatPrice(accountBalance.BTC.total * currentPrice)}</div>
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
+          
+          {/* AI Analysis Information Column */}
+          <div className="bg-white rounded-lg shadow">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-medium text-gray-900">AI Analysis Details</h2>
+                <div className="flex items-center space-x-4">
+                  <div className="flex items-center">
+                    <span className={`inline-flex h-3 w-3 rounded-full ${
+                      isAiServiceEnabled ? 'bg-green-500' : 'bg-red-500'
+                    }`}></span>
+                    <span className="ml-2 text-sm text-gray-500">
+                      Service {isAiServiceEnabled ? 'Online' : 'Offline'}
+                    </span>
+                  </div>
+                  {isAiServiceEnabled && (
+                    <button
+                      type="button"
+                      onClick={handleRunAnalysis}
+                      disabled={isAnalysisLoading || (nextAnalysisAvailable !== null)}
+                      className={`inline-flex items-center px-3 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md shadow-sm 
+                        ${isAnalysisLoading || nextAnalysisAvailable !== null 
+                          ? 'opacity-50 cursor-not-allowed' 
+                          : 'hover:bg-blue-700'} 
+                        focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500`}
+                    >
+                      {isAnalysisLoading ? 'Analyzing...' : 'Run Analysis'}
+                    </button>
+                  )}
+                </div>
               </div>
-            ) : (
-              <div className="flex items-center justify-center h-32">
-                <p className="text-gray-500">Loading account balance...</p>
+              
+              {nextAnalysisAvailable && (
+                <div className="mb-4 text-sm text-gray-500">
+                  Next analysis available in {Math.ceil((nextAnalysisAvailable - Date.now()) / 1000)}s
+                </div>
+              )}
+
+              <div className="mt-4 space-y-4">
+                {/* Status Section */}
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-gray-500">Status:</span>
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                      isAnalysisLoading ? 'bg-blue-100 text-blue-800' :
+                      isStrategyRunning ? 'bg-green-100 text-green-800' : 
+                      'bg-yellow-100 text-yellow-800'
+                    }`}>
+                      {isAnalysisLoading ? 'Analyzing...' :
+                       isStrategyRunning ? 'Running' : 
+                       'Idle'}
+                    </span>
+                  </div>
+                </div>
+                
+                {/* Last Run Section */}
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-gray-500">Last Analysis:</span>
+                    <span className="text-sm text-gray-900">{lastUpdated ? lastUpdated.toLocaleString() : 'Never'}</span>
+                  </div>
+                </div>
+                
+                {/* Reasoning Section */}
+                <div>
+                  <h3 className="text-sm font-medium text-gray-500 mb-2">Analysis Reasoning:</h3>
+                  <div className="bg-gray-50 rounded-lg p-4">
+                    {isAnalysisLoading ? (
+                      <div className="flex items-center justify-center py-4">
+                        <div className="animate-pulse flex space-x-4">
+                          <div className="flex-1 space-y-4 py-1">
+                            <div className="h-4 bg-gray-200 rounded w-3/4"></div>
+                            <div className="space-y-2">
+                              <div className="h-4 bg-gray-200 rounded"></div>
+                              <div className="h-4 bg-gray-200 rounded w-5/6"></div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="text-sm text-gray-700">
+                          {analysis?.reasoning || 'No analysis available'}
+                        </p>
+                        {analysis?.confidence && (
+                          <div className="mt-2 flex items-center">
+                            <span className="text-xs text-gray-500 mr-2">Confidence:</span>
+                            <div className="flex-grow h-2 bg-gray-200 rounded-full">
+                              <div 
+                                className="h-2 bg-blue-500 rounded-full"
+                                style={{ width: `${analysis.confidence * 100}%` }}
+                              />
+                            </div>
+                            <span className="ml-2 text-xs text-gray-500">
+                              {Math.round(analysis.confidence * 100)}%
+                            </span>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+                
+                {/* Key Indicators Section */}
+                <div>
+                  <h3 className="text-sm font-medium text-gray-500 mb-2">Key Indicators:</h3>
+                  {isAnalysisLoading ? (
+                    <div className="flex flex-wrap gap-2">
+                      {[1, 2, 3].map((i) => (
+                        <div key={i} className="h-6 w-20 bg-gray-200 rounded-full animate-pulse"></div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {analysis?.indicators?.map((indicator, index) => (
+                        <span
+                          key={index}
+                          className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
+                        >
+                          {indicator}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
-            )}
+            </div>
           </div>
         </div>
       </div>
+      
+      {/* API Configuration Form */}
+      {!isConfigured && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="w-full max-w-md p-6 bg-white rounded-lg shadow-xl">
+            <h2 className="mb-4 text-xl font-bold">API Configuration</h2>
+            <ApiConfigForm onConfigured={handleApiConfigured} />
+          </div>
+        </div>
+      )}
+      
+      {/* Toast notifications */}
+      <Toaster position="top-right" />
     </Layout>
   );
 } 

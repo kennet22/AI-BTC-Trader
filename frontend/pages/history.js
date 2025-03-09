@@ -146,6 +146,10 @@ export default function History() {
           <div className="overflow-hidden bg-white shadow sm:rounded-lg">
             <div className="px-4 py-5 sm:px-6">
               <h2 className="text-lg font-medium text-gray-900">Recent Trades</h2>
+              <p className="mt-1 text-sm text-gray-500">
+                Note: Fields showing "-" indicate open positions that haven't been closed yet. 
+                Profit/Loss is only calculated when a position is closed with a corresponding sell.
+              </p>
             </div>
             
             {isLoading ? (

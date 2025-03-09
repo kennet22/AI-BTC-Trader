@@ -1,1 +1,1 @@
-self.__REACT_LOADABLE_MANIFEST="{}"
+self.__REACT_LOADABLE_MANIFEST="{\"_app.js -> react-hot-toast\":{\"id\":\"_app.js -> react-hot-toast\",\"files\":[\"static/chunks/node_modules_react-hot-toast_dist_index_mjs.js\"]},\"index.js -> react-hot-toast\":{\"id\":\"index.js -> react-hot-toast\",\"files\":[]},\"market-data.js -> react-hot-toast\":{\"id\":\"market-data.js -> react-hot-toast\",\"files\":[\"static/chunks/node_modules_react-hot-toast_dist_index_mjs.js\"]}}"

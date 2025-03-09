@@ -1,0 +1,17 @@
+[Unit]
+Description=BTC Investor AI Trading Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/btc-trader-app/backend
+Environment=PYTHONPATH=/root/btc-trader-app/backend
+ExecStart=/usr/bin/python3 btc_investor_ai_v4.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/btc_investor.log
+StandardError=append:/var/log/btc_investor.error.log
+
+[Install]
+WantedBy=multi-user.target 
