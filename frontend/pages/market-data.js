@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import Layout from '../components/Layout';
 import BitcoinPriceChart from '../components/BitcoinPriceChart';
+import ChartIndicators from '../components/ChartIndicators';
 import TechnicalIndicators from '../components/TechnicalIndicators';
 import AIAnalysis from '../components/AIAnalysis';
 import { formatPrice } from '../lib/utils';
@@ -45,6 +46,32 @@ const storeMarketData = (timeframe, data) => {
   }
 };
 
+// Get stored indicators from local storage
+const getStoredIndicators = () => {
+  if (typeof window === 'undefined') return []; // Guard against SSR
+  
+  try {
+    const storedIndicators = localStorage.getItem('chartIndicators');
+    if (storedIndicators) {
+      return JSON.parse(storedIndicators);
+    }
+  } catch (error) {
+    console.error('Error retrieving stored indicators:', error);
+  }
+  return [];
+};
+
+// Store indicators in local storage
+const storeIndicators = (indicators) => {
+  if (typeof window === 'undefined') return; // Guard against SSR
+  
+  try {
+    localStorage.setItem('chartIndicators', JSON.stringify(indicators));
+  } catch (error) {
+    console.error('Error storing indicators:', error);
+  }
+};
+
 export default function MarketData() {
   const [marketData, setMarketData] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -54,10 +81,14 @@ export default function MarketData() {
   const [showAnalysis, setShowAnalysis] = useState(false);
   const [analysisError, setAnalysisError] = useState(null);
   const [isClient, setIsClient] = useState(false);
+  const [activeIndicators, setActiveIndicators] = useState([]);
 
   useEffect(() => {
     // Set isClient to true once we're on the client side
     setIsClient(true);
+    
+    // Load stored indicators
+    setActiveIndicators(getStoredIndicators());
     
     // Check if we have cached data first
     const cachedData = getStoredMarketData(selectedTimeframe);
@@ -132,6 +163,11 @@ export default function MarketData() {
   const handleAnalysisSuccess = () => {
     setIsAnalysisLoading(false);
   };
+  
+  const handleIndicatorChange = (indicators) => {
+    setActiveIndicators(indicators);
+    storeIndicators(indicators);
+  };
 
   return (
     <Layout>
@@ -173,8 +209,18 @@ export default function MarketData() {
         
         <div className="mt-6">
           <div className="p-6 bg-white rounded-lg shadow">
-            <h2 className="mb-4 text-lg font-medium text-gray-900">Bitcoin Price Chart</h2>
-            <BitcoinPriceChart data={marketData} timeframe={selectedTimeframe} />
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-medium text-gray-900">Bitcoin Price Chart</h2>
+              <ChartIndicators 
+                activeIndicators={activeIndicators}
+                onIndicatorChange={handleIndicatorChange}
+              />
+            </div>
+            <BitcoinPriceChart 
+              data={marketData} 
+              timeframe={selectedTimeframe} 
+              indicators={activeIndicators}
+            />
           </div>
         </div>
         

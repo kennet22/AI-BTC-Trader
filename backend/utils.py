@@ -170,4 +170,74 @@ def get_performance_summary(trades):
         "avg_loss_per_trade": avg_loss,
         "max_profit": max_profit,
         "max_loss": max_loss,
-    } 
+    }
+
+def calculate_total_profit_summary(trade_history, active_positions, current_price):
+    """
+    Calculate both realized and unrealized profit.
+    
+    Args:
+        trade_history: List of trade history entries
+        active_positions: List of active positions
+        current_price: Current BTC price
+        
+    Returns:
+        Dictionary with realized and unrealized profit information
+    """
+    # Initialize summary
+    summary = {
+        "realized_profit": 0,
+        "unrealized_profit": 0,
+        "total_profit": 0,
+        "realized_profit_percentage": 0,
+        "unrealized_profit_percentage": 0,
+        "total_profit_percentage": 0,
+        "total_buy_volume": 0,
+        "total_sell_volume": 0,
+        "open_positions_count": len(active_positions),
+        "closed_positions_count": 0
+    }
+    
+    # Calculate realized profit from trade history
+    closed_positions = set()
+    total_investment = 0
+    
+    # First pass: calculate total investment and identify closed positions
+    for trade in trade_history:
+        if trade.get("side") == "BUY":
+            price = trade.get("price", 0)
+            size = trade.get("size", 0)
+            total_investment += price * size
+            summary["total_buy_volume"] += size
+        elif trade.get("side") == "SELL":
+            summary["total_sell_volume"] += trade.get("size", 0)
+            closed_positions.add(trade.get("position_id"))
+            if "profit_amount" in trade:
+                summary["realized_profit"] += trade["profit_amount"]
+    
+    summary["closed_positions_count"] = len(closed_positions)
+    
+    # Calculate unrealized profit from active positions
+    for position in active_positions:
+        entry_price = position.get("entry_price", 0)
+        size = position.get("size", 0)
+        is_long = True  # Assuming all positions are long
+        
+        if entry_price > 0 and size > 0:
+            unrealized_profit = calculate_profit_loss(entry_price, current_price, size, is_long)
+            summary["unrealized_profit"] += unrealized_profit
+    
+    # Calculate total profit
+    summary["total_profit"] = summary["realized_profit"] + summary["unrealized_profit"]
+    
+    # Calculate percentages if there was any investment
+    if total_investment > 0:
+        summary["realized_profit_percentage"] = (summary["realized_profit"] / total_investment) * 100
+        summary["total_profit_percentage"] = (summary["total_profit"] / total_investment) * 100
+    
+    # Calculate unrealized profit percentage based on current open positions value
+    open_positions_value = sum(p.get("entry_price", 0) * p.get("size", 0) for p in active_positions)
+    if open_positions_value > 0:
+        summary["unrealized_profit_percentage"] = (summary["unrealized_profit"] / open_positions_value) * 100
+    
+    return summary 

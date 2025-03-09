@@ -24,6 +24,8 @@ from utils import (
     get_performance_summary,
     calculate_total_profit_summary
 )
+import subprocess
+from enum import Enum
 
 # Try importing additional dependencies
 missing_dependencies = []
@@ -912,6 +914,65 @@ def startup_event():
             logger.error(f"Failed to initialize trader with saved keys: {e}")
     else:
         logger.info("No saved API keys found. Please configure API keys.")
+
+class ServiceStatus(str, Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
+def get_service_status() -> ServiceStatus:
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "btc_investor_ai.service"],
+            capture_output=True,
+            text=True
+        )
+        status = result.stdout.strip()
+        
+        if status == "active":
+            return ServiceStatus.ACTIVE
+        elif status == "inactive":
+            return ServiceStatus.INACTIVE
+        elif status == "failed":
+            return ServiceStatus.FAILED
+        else:
+            return ServiceStatus.UNKNOWN
+    except Exception:
+        return ServiceStatus.UNKNOWN
+
+@app.get("/api/trader/status")
+async def get_trader_status():
+    status = get_service_status()
+    return {"status": status}
+
+@app.post("/api/trader/start")
+async def start_trader():
+    try:
+        subprocess.run(["systemctl", "start", "btc_investor_ai.service"], check=True)
+        return {"message": "Trading service started successfully"}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start trading service: {str(e)}")
+
+@app.post("/api/trader/stop")
+async def stop_trader():
+    try:
+        subprocess.run(["systemctl", "stop", "btc_investor_ai.service"], check=True)
+        return {"message": "Trading service stopped successfully"}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to stop trading service: {str(e)}")
+
+@app.get("/api/trader/logs")
+async def get_trader_logs(lines: int = 100):
+    try:
+        result = subprocess.run(
+            ["journalctl", "-u", "btc_investor_ai.service", "-n", str(lines)],
+            capture_output=True,
+            text=True
+        )
+        return {"logs": result.stdout.splitlines()}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch logs: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
