@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { formatPercentage } from '../lib/utils';
+import { useCrypto } from '../lib/cryptoContext';
 
-// Helper function to get cached analysis data
-const getCachedAnalysis = () => {
+// Helper function to get cached analysis data for a specific crypto asset
+const getCachedAnalysis = (cryptoAsset) => {
   if (typeof window === 'undefined') return null; // Guard against SSR
   
   try {
-    const cachedData = localStorage.getItem('aiAnalysisData');
+    const cachedData = localStorage.getItem(`aiAnalysisData_${cryptoAsset}`);
     if (cachedData) {
       const { data, timestamp } = JSON.parse(cachedData);
       // Check if data is less than 30 minutes old
@@ -15,26 +16,27 @@ const getCachedAnalysis = () => {
       }
     }
   } catch (error) {
-    console.error('Error retrieving cached analysis data:', error);
+    console.error(`Error retrieving cached analysis data for ${cryptoAsset}:`, error);
   }
   return null;
 };
 
-// Helper function to store analysis data
-const cacheAnalysisData = (data) => {
+// Helper function to store analysis data for a specific crypto asset
+const cacheAnalysisData = (data, cryptoAsset) => {
   if (typeof window === 'undefined') return; // Guard against SSR
   
   try {
     localStorage.setItem(
-      'aiAnalysisData', 
+      `aiAnalysisData_${cryptoAsset}`, 
       JSON.stringify({ data, timestamp: Date.now() })
     );
   } catch (error) {
-    console.error('Error caching analysis data:', error);
+    console.error(`Error caching analysis data for ${cryptoAsset}:`, error);
   }
 };
 
 const AIAnalysis = ({ onError, onSuccess, isManualRequest = false }) => {
+  const { selectedCryptoAsset } = useCrypto();
   const [analysis, setAnalysis] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -47,7 +49,7 @@ const AIAnalysis = ({ onError, onSuccess, isManualRequest = false }) => {
     
     // If not a manual request and we have cached data, use it
     if (!isManualRequest) {
-      const cachedData = getCachedAnalysis();
+      const cachedData = getCachedAnalysis(selectedCryptoAsset);
       if (cachedData) {
         setAnalysis(cachedData);
         setLoading(false);
@@ -59,6 +61,7 @@ const AIAnalysis = ({ onError, onSuccess, isManualRequest = false }) => {
     const fetchAnalysis = async () => {
       try {
         setLoading(true);
+        setError(null);
         
         // Set a timeout to cancel the request after 15 seconds
         const timeoutId = setTimeout(() => {
@@ -72,7 +75,8 @@ const AIAnalysis = ({ onError, onSuccess, isManualRequest = false }) => {
         const controller = new AbortController();
         const timeoutSignal = AbortSignal.timeout(15000);
         
-        const response = await fetch('/api/ai-analysis', {
+        // Add the selected crypto asset as a query parameter
+        const response = await fetch(`/api/ai-analysis?symbol=${selectedCryptoAsset}`, {
           // Use both abort controller and timeout signal
           signal: controller.signal
         });
@@ -96,11 +100,11 @@ const AIAnalysis = ({ onError, onSuccess, isManualRequest = false }) => {
           setAnalysis(data.data);
           // Cache the successful analysis data
           if (isClient) {
-            cacheAnalysisData(data.data);
+            cacheAnalysisData(data.data, selectedCryptoAsset);
           }
           if (onSuccess) onSuccess();
         } else {
-          throw new Error(data.detail || 'Failed to fetch AI analysis');
+          throw new Error('Invalid response format from server');
         }
       } catch (err) {
         console.error('AI Analysis error:', err);
@@ -125,7 +129,7 @@ const AIAnalysis = ({ onError, onSuccess, isManualRequest = false }) => {
       fetchAnalysis();
     } else if (isClient) {
       // For automatic requests, only fetch if needed (no cached data)
-      const cachedData = getCachedAnalysis();
+      const cachedData = getCachedAnalysis(selectedCryptoAsset);
       if (!cachedData) {
         fetchAnalysis();
       } else {
@@ -141,7 +145,7 @@ const AIAnalysis = ({ onError, onSuccess, isManualRequest = false }) => {
         clearTimeout(requestTimeout);
       }
     };
-  }, [isManualRequest, onError, onSuccess, isClient]);
+  }, [isManualRequest, onError, onSuccess, isClient, selectedCryptoAsset]);
 
   // Helper function to render any value, handling objects and arrays recursively
   const renderValue = (value, depth = 0) => {

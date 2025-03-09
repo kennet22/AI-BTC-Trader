@@ -15,6 +15,7 @@ import {
 import 'chartjs-adapter-date-fns';
 import { enUS } from 'date-fns/locale';
 import { ClockIcon, GlobeAltIcon } from '@heroicons/react/24/outline';
+import { formatPrice } from '../lib/utils';
 
 // Register ChartJS components
 ChartJS.register(
@@ -216,13 +217,40 @@ const formatAxisValue = (value) => {
   return `$${value.toLocaleString('en-US')}`;
 };
 
-export default function BitcoinPriceChart({ data, timeframe = '1H', indicators = [] }) {
-  const [chartData, setChartData] = useState({
-    datasets: [],
-  });
+export default function BitcoinPriceChart({ 
+  marketData = [], 
+  data = [], // For backward compatibility
+  timeframe = 'ONE_HOUR', 
+  indicators = [],
+  onTimeframeChange,
+  cryptoAsset = 'BTC',
+  isLoading = false
+}) {
+  // Get crypto name based on symbol
+  const getCryptoName = (symbol) => {
+    const cryptoNames = {
+      'BTC': 'Bitcoin',
+      'ETH': 'Ethereum',
+      'SOL': 'Solana',
+      'XRP': 'Ripple',
+      'USDC': 'USD Coin',
+      'ADA': 'Cardano',
+      'DOGE': 'Dogecoin',
+      'SHIB': 'Shiba Inu',
+      'BTC-USDC': 'Bitcoin/USDC'
+    };
+    
+    return cryptoNames[symbol] || symbol;
+  };
+
+  // Use marketData if provided, otherwise fall back to data (for backward compatibility)
+  const chartData = marketData.length > 0 ? marketData : data;
+
   const [chartOptions, setChartOptions] = useState({});
+  const [chartDatasets, setChartDatasets] = useState({ datasets: [] });
   const [use24HourFormat, setUse24HourFormat] = useState(true);
   const [useLocalTimezone, setUseLocalTimezone] = useState(true);
+  const [localLoading, setLocalLoading] = useState(false);
   
   // Use refs to store previous values to prevent unnecessary re-renders
   const prevDataRef = useRef();
@@ -230,6 +258,7 @@ export default function BitcoinPriceChart({ data, timeframe = '1H', indicators =
   const prevIndicatorsRef = useRef();
   const prevTimeFormatRef = useRef();
   const prevTimezoneRef = useRef();
+  const prevCryptoAssetRef = useRef();
   const indicatorsStringified = JSON.stringify(indicators);
   
   // Calculate chart height based on number of indicators
@@ -250,58 +279,67 @@ export default function BitcoinPriceChart({ data, timeframe = '1H', indicators =
   };
 
   useEffect(() => {
-    if (!data || data.length === 0) return;
+    if (!chartData || chartData.length === 0) return;
     
     // Check if data or dependencies have changed
-    const dataChanged = prevDataRef.current !== data;
+    const dataChanged = prevDataRef.current !== chartData;
     const timeframeChanged = prevTimeframeRef.current !== timeframe;
     const indicatorsChanged = prevIndicatorsRef.current !== indicatorsStringified;
     const timeFormatChanged = prevTimeFormatRef.current !== use24HourFormat;
     const timezoneChanged = prevTimezoneRef.current !== useLocalTimezone;
+    const cryptoAssetChanged = prevCryptoAssetRef.current !== cryptoAsset;
     
-    if (!dataChanged && !timeframeChanged && !indicatorsChanged && !timeFormatChanged && !timezoneChanged) {
+    if (!dataChanged && !timeframeChanged && !indicatorsChanged && !timeFormatChanged && !timezoneChanged && !cryptoAssetChanged) {
       return; // Skip update if nothing has changed
     }
     
+    // Set loading state when crypto asset changes
+    if (cryptoAssetChanged) {
+      setLocalLoading(true);
+      // This loading state will be cleared once the chart is rendered
+      setTimeout(() => setLocalLoading(false), 500);
+    }
+    
     // Update refs
-    prevDataRef.current = data;
+    prevDataRef.current = chartData;
     prevTimeframeRef.current = timeframe;
     prevIndicatorsRef.current = indicatorsStringified;
     prevTimeFormatRef.current = use24HourFormat;
     prevTimezoneRef.current = useLocalTimezone;
+    prevCryptoAssetRef.current = cryptoAsset;
 
     // Prepare chart data
-    const prices = data.map((item) => ({
+    const prices = chartData.map((item) => ({
       x: new Date(item.timestamp),
       y: item.close,
     }));
 
-    // Setup datasets array with the main price dataset
+    // Start with the main price dataset
     const datasets = [
       {
-        label: 'Bitcoin Price',
+        label: `${getCryptoName(cryptoAsset)} Price`,
         data: prices,
-        borderColor: '#0d9488',
-        backgroundColor: 'rgba(13, 148, 136, 0.1)',
+        borderColor: 'rgb(59, 130, 246)', // Blue
+        backgroundColor: 'rgba(59, 130, 246, 0.1)',
         borderWidth: 2,
         pointRadius: 0,
         pointHoverRadius: 3,
-        fill: true,
-        tension: 0.4,
+        fill: false,
+        tension: 0.2,
         yAxisID: 'y',
       },
     ];
-    
-    // Add indicator datasets
-    indicators.forEach(indicator => {
+
+    // Add indicator datasets if any are active
+    indicators.forEach((indicator) => {
       if (!indicator.isActive) return;
-      
+
       switch (indicator.id.split('_')[0]) {
         case 'sma':
-          const smaValues = calculateIndicators.sma(data, indicator.settings.period);
+          const smaValues = calculateIndicators.sma(chartData, indicator.settings.period);
           datasets.push({
             label: `SMA (${indicator.settings.period})`,
-            data: data.map((item, i) => ({
+            data: chartData.map((item, i) => ({
               x: new Date(item.timestamp),
               y: smaValues[i]
             })),
@@ -316,10 +354,10 @@ export default function BitcoinPriceChart({ data, timeframe = '1H', indicators =
           break;
           
         case 'ema':
-          const emaValues = calculateIndicators.ema(data, indicator.settings.period);
+          const emaValues = calculateIndicators.ema(chartData, indicator.settings.period);
           datasets.push({
             label: `EMA (${indicator.settings.period})`,
-            data: data.map((item, i) => ({
+            data: chartData.map((item, i) => ({
               x: new Date(item.timestamp),
               y: emaValues[i]
             })),
@@ -334,12 +372,12 @@ export default function BitcoinPriceChart({ data, timeframe = '1H', indicators =
           break;
           
         case 'bb':
-          const bbValues = calculateIndicators.bb(data, indicator.settings.period);
+          const bbValues = calculateIndicators.bb(chartData, indicator.settings.period);
           
           // Middle band (SMA)
           datasets.push({
             label: `BB Middle (${indicator.settings.period})`,
-            data: data.map((item, i) => ({
+            data: chartData.map((item, i) => ({
               x: new Date(item.timestamp),
               y: bbValues.middle[i]
             })),
@@ -355,15 +393,15 @@ export default function BitcoinPriceChart({ data, timeframe = '1H', indicators =
           // Upper band
           datasets.push({
             label: `BB Upper (${indicator.settings.period})`,
-            data: data.map((item, i) => ({
+            data: chartData.map((item, i) => ({
               x: new Date(item.timestamp),
               y: bbValues.upper[i]
             })),
-            borderColor: indicator.color,
-            borderDash: [5, 5],
+            borderColor: 'rgba(75, 192, 192, 0.6)',
             borderWidth: 1,
             pointRadius: 0,
             pointHoverRadius: 0,
+            borderDash: [5, 5],
             fill: false,
             tension: 0,
             yAxisID: 'y',
@@ -372,15 +410,15 @@ export default function BitcoinPriceChart({ data, timeframe = '1H', indicators =
           // Lower band
           datasets.push({
             label: `BB Lower (${indicator.settings.period})`,
-            data: data.map((item, i) => ({
+            data: chartData.map((item, i) => ({
               x: new Date(item.timestamp),
               y: bbValues.lower[i]
             })),
-            borderColor: indicator.color,
-            borderDash: [5, 5],
+            borderColor: 'rgba(75, 192, 192, 0.6)',
             borderWidth: 1,
             pointRadius: 0,
             pointHoverRadius: 0,
+            borderDash: [5, 5],
             fill: false,
             tension: 0,
             yAxisID: 'y',
@@ -388,10 +426,10 @@ export default function BitcoinPriceChart({ data, timeframe = '1H', indicators =
           break;
           
         case 'rsi':
-          const rsiValues = calculateIndicators.rsi(data, indicator.settings.period);
+          const rsiValues = calculateIndicators.rsi(chartData, indicator.settings.period);
           datasets.push({
             label: `RSI (${indicator.settings.period})`,
-            data: data.map((item, i) => ({
+            data: chartData.map((item, i) => ({
               x: new Date(item.timestamp),
               y: rsiValues[i]
             })),
@@ -406,7 +444,7 @@ export default function BitcoinPriceChart({ data, timeframe = '1H', indicators =
           break;
           
         case 'macd':
-          const macdValues = calculateIndicators.macd(data, {
+          const macdValues = calculateIndicators.macd(chartData, {
             fastPeriod: indicator.settings.fastPeriod,
             slowPeriod: indicator.settings.slowPeriod,
             signalPeriod: indicator.settings.signalPeriod
@@ -415,7 +453,7 @@ export default function BitcoinPriceChart({ data, timeframe = '1H', indicators =
           // MACD Line
           datasets.push({
             label: `MACD (${indicator.settings.fastPeriod},${indicator.settings.slowPeriod},${indicator.settings.signalPeriod})`,
-            data: data.map((item, i) => ({
+            data: chartData.map((item, i) => ({
               x: new Date(item.timestamp),
               y: macdValues.macdLine[i]
             })),
@@ -431,11 +469,11 @@ export default function BitcoinPriceChart({ data, timeframe = '1H', indicators =
           // Signal Line
           datasets.push({
             label: `Signal (${indicator.settings.signalPeriod})`,
-            data: data.map((item, i) => ({
+            data: chartData.map((item, i) => ({
               x: new Date(item.timestamp),
               y: macdValues.signalLine[i]
             })),
-            borderColor: 'rgba(255, 99, 132, 1)',
+            borderColor: 'rgba(255, 159, 64, 1)',
             borderWidth: 1.5,
             pointRadius: 0,
             pointHoverRadius: 0,
@@ -447,37 +485,43 @@ export default function BitcoinPriceChart({ data, timeframe = '1H', indicators =
           // Histogram
           datasets.push({
             label: 'Histogram',
-            data: data.map((item, i) => ({
+            data: chartData.map((item, i) => ({
               x: new Date(item.timestamp),
               y: macdValues.histogram[i]
             })),
+            backgroundColor: chartData.map((item, i) => 
+              macdValues.histogram[i] > 0 ? 'rgba(75, 192, 192, 0.5)' : 'rgba(255, 99, 132, 0.5)'
+            ),
+            borderColor: chartData.map((item, i) => 
+              macdValues.histogram[i] > 0 ? 'rgba(75, 192, 192, 1)' : 'rgba(255, 99, 132, 1)'
+            ),
+            borderWidth: 1,
             type: 'bar',
-            backgroundColor: (context) => {
-              const value = context.dataset.data[context.dataIndex]?.y;
-              return value >= 0 ? 'rgba(75, 192, 192, 0.5)' : 'rgba(255, 99, 132, 0.5)';
-            },
+            tension: 0,
             yAxisID: 'macd',
           });
           break;
           
         case 'volume':
-          const volumeValues = calculateIndicators.volume(data);
+          const volumeValues = calculateIndicators.volume(chartData);
           datasets.push({
             label: 'Volume',
-            data: data.map((item, i) => ({
+            data: chartData.map((item, i) => ({
               x: new Date(item.timestamp),
               y: volumeValues[i]
             })),
+            backgroundColor: 'rgba(54, 162, 235, 0.3)',
+            borderColor: 'rgba(54, 162, 235, 1)',
+            borderWidth: 1,
             type: 'bar',
-            backgroundColor: 'rgba(75, 192, 192, 0.3)',
             yAxisID: 'volume',
           });
           break;
       }
     });
 
-    // Setup chart data
-    setChartData({ datasets });
+    // Update the chartDatasets state
+    setChartDatasets({ datasets });
 
     // Determine which axes to show based on active indicators
     const hasRSI = indicators.some(ind => ind.isActive && ind.id.split('_')[0] === 'rsi');
@@ -580,7 +624,6 @@ export default function BitcoinPriceChart({ data, timeframe = '1H', indicators =
           color: 'rgba(0, 0, 0, 0.05)',
         },
         ticks: {
-          // Fix for volume display
           callback: (value) => {
             if (value === 0) return '0';
             if (value >= 1000000) {
@@ -599,41 +642,58 @@ export default function BitcoinPriceChart({ data, timeframe = '1H', indicators =
         }
       };
     }
-    
+
     setChartOptions({
       responsive: true,
       maintainAspectRatio: false,
+      animation: false,
       plugins: {
+        title: {
+          display: true,
+          text: `${getCryptoName(cryptoAsset)} Price Chart (${timeframe})`,
+          color: 'rgb(75, 85, 99)',
+          font: {
+            size: 16,
+            weight: 'bold'
+          },
+          padding: {
+            top: 10,
+            bottom: 10
+          }
+        },
         legend: {
           display: true,
           position: 'top',
+          align: 'center',
           labels: {
             boxWidth: 12,
-            padding: 15,
-            usePointStyle: true
-          }
+            usePointStyle: true,
+          },
         },
         tooltip: {
           mode: 'index',
           intersect: false,
-          padding: 10,
           callbacks: {
-            label: (context) => {
-              const label = context.dataset.label || '';
-              const value = context.parsed.y;
+            label: function(context) {
+              let label = context.dataset.label || '';
               
-              if (context.dataset.yAxisID === 'y') {
-                return `${label}: $${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-              } else if (context.dataset.yAxisID === 'rsi') {
-                return `${label}: ${value.toFixed(2)}`;
-              } else if (context.dataset.yAxisID === 'macd') {
-                return `${label}: ${value.toFixed(5)}`;
-              } else if (context.dataset.yAxisID === 'volume') {
-                return `${label}: ${value.toLocaleString('en-US')}`;
+              if (label) {
+                label += ': ';
               }
-              return `${label}: ${value}`;
-            },
-          },
+              
+              if (context.parsed.y !== null) {
+                if (label.includes('RSI') || label.includes('MACD') || label.includes('Signal') || label === 'Histogram:') {
+                  label += context.parsed.y.toFixed(2);
+                } else if (label.includes('Volume:')) {
+                  label += formatAxisValue(context.parsed.y);
+                } else {
+                  label += formatPrice(context.parsed.y);
+                }
+              }
+              
+              return label;
+            }
+          }
         },
       },
       scales,
@@ -643,7 +703,7 @@ export default function BitcoinPriceChart({ data, timeframe = '1H', indicators =
       },
       timezone: useLocalTimezone ? 'local' : 'UTC',
     });
-  }, [data, timeframe, indicatorsStringified, use24HourFormat, useLocalTimezone]);
+  }, [chartData, timeframe, indicatorsStringified, use24HourFormat, useLocalTimezone, cryptoAsset]);
 
   // Toggle between 12-hour and 24-hour time formats
   const toggleTimeFormat = () => {
@@ -655,67 +715,86 @@ export default function BitcoinPriceChart({ data, timeframe = '1H', indicators =
     setUseLocalTimezone(!useLocalTimezone);
   };
 
-  // Calculate the height based on active indicators
-  const chartHeight = getChartHeight();
-
   return (
     <div>
-      {data && data.length > 0 ? (
+      {isLoading || localLoading ? (
+        <div className="h-[400px] flex items-center justify-center bg-gray-50 rounded-lg">
+          <div className="text-center">
+            <svg className="w-12 h-12 mx-auto animate-spin text-primary-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <p className="mt-3 text-gray-600">Loading chart data for {getCryptoName(cryptoAsset)}...</p>
+          </div>
+        </div>
+      ) : chartData && chartData.length > 0 ? (
         <>
           <div className="flex justify-between items-center mb-3">
-            <div className="flex flex-wrap gap-2">
-              {indicators.filter(ind => ind.isActive).map(indicator => (
-                <div 
-                  key={indicator.id} 
-                  className="inline-flex items-center px-2 py-1 text-xs bg-gray-100 rounded-full"
-                  style={{ borderLeft: `4px solid ${indicator.color}` }}
-                >
-                  <span>{indicator.name.split(' ')[0]}</span>
-                  {indicator.settings.period && (
-                    <span className="ml-1 text-gray-500">({indicator.settings.period})</span>
-                  )}
-                </div>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <button 
-                onClick={toggleTimezone}
-                className="inline-flex items-center px-2 py-1 text-xs font-medium text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 focus:outline-none"
-                title={useLocalTimezone ? "Using local timezone" : "Using UTC timezone"}
+            <div className="space-x-2">
+              <button
+                className="text-sm text-gray-600 hover:text-gray-900 bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded"
+                onClick={toggleTimeFormat}
+                title="Toggle between 12-hour and 24-hour time format"
               >
-                <GlobeAltIcon className="w-3 h-3 mr-1" />
+                {use24HourFormat ? '24H' : '12H'}
+              </button>
+              <button
+                className="text-sm text-gray-600 hover:text-gray-900 bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded"
+                onClick={toggleTimezone}
+                title="Toggle between local and UTC timezone"
+              >
                 {useLocalTimezone ? 'Local' : 'UTC'}
               </button>
-              <button 
-                onClick={toggleTimeFormat}
-                className="inline-flex items-center px-2 py-1 text-xs font-medium text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 focus:outline-none"
-              >
-                <ClockIcon className="w-3 h-3 mr-1" />
-                {use24HourFormat ? '24h' : '12h'} Format
-              </button>
             </div>
+            {onTimeframeChange && (
+              <div className="flex items-center space-x-2">
+                <button 
+                  className={`text-xs px-2 py-1 rounded ${timeframe === 'ONE_DAY' ? 'bg-primary-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                  onClick={() => onTimeframeChange('ONE_DAY')}
+                >
+                  1D
+                </button>
+                <button 
+                  className={`text-xs px-2 py-1 rounded ${timeframe === 'SIX_HOURS' ? 'bg-primary-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                  onClick={() => onTimeframeChange('SIX_HOURS')}
+                >
+                  6H
+                </button>
+                <button 
+                  className={`text-xs px-2 py-1 rounded ${timeframe === 'ONE_HOUR' ? 'bg-primary-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                  onClick={() => onTimeframeChange('ONE_HOUR')}
+                >
+                  1H
+                </button>
+                <button 
+                  className={`text-xs px-2 py-1 rounded ${timeframe === 'FIFTEEN_MINUTES' ? 'bg-primary-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                  onClick={() => onTimeframeChange('FIFTEEN_MINUTES')}
+                >
+                  15M
+                </button>
+                <button 
+                  className={`text-xs px-2 py-1 rounded ${timeframe === 'FIVE_MINUTES' ? 'bg-primary-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                  onClick={() => onTimeframeChange('FIVE_MINUTES')}
+                >
+                  5M
+                </button>
+                <button 
+                  className={`text-xs px-2 py-1 rounded ${timeframe === 'ONE_MINUTE' ? 'bg-primary-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                  onClick={() => onTimeframeChange('ONE_MINUTE')}
+                >
+                  1M
+                </button>
+              </div>
+            )}
           </div>
-          <div style={{ height: `${chartHeight}px` }}>
-            <Line 
-              data={chartData} 
-              options={{
-                ...chartOptions,
-                maintainAspectRatio: false,
-                layout: {
-                  padding: {
-                    left: 10,
-                    right: 10,
-                    top: 20,
-                    bottom: 10
-                  }
-                }
-              }} 
-            />
+          
+          <div style={{ height: getChartHeight() + 'px' }}>
+            <Line options={chartOptions} data={chartDatasets} />
           </div>
         </>
       ) : (
-        <div className="flex items-center justify-center h-80">
-          <p className="text-gray-500">Loading chart data...</p>
+        <div className="h-[400px] flex items-center justify-center bg-gray-50 rounded-lg">
+          <p className="text-gray-500">No data available for {getCryptoName(cryptoAsset)}</p>
         </div>
       )}
     </div>
